@@ -230,11 +230,15 @@ require([
   "esri/widgets/ElevationProfile",
   "esri/geometry/geometryEngine",
   "esri/geometry/Polyline",
+  "esri/geometry/Point",
+  "esri/layers/GraphicsLayer",
+  "esri/Graphic",
   "esri/core/reactiveUtils"
-], function (Map, MapView, SceneView, ElevationProfile, geometryEngine, Polyline, reactiveUtils) {
+], function (Map, MapView, SceneView, ElevationProfile, geometryEngine, Polyline, Point, GraphicsLayer, Graphic, reactiveUtils) {
 
   // One shared map. ground "world-elevation" feeds the ground profile in BOTH views.
-  const map = new Map({ basemap: "topo-vector", ground: "world-elevation" });
+  const hoverLayer = new GraphicsLayer({ elevationInfo: { mode: "on-the-ground" } });
+  const map = new Map({ basemap: "topo-vector", ground: "world-elevation", layers: [hoverLayer] });
 
   const CONTAINER = "viewDiv";
   const start = { center: [-119.5383, 37.8651], zoom: 12 }; // Yosemite
@@ -321,8 +325,14 @@ require([
     const n = elevs.length;
     const step = totalM / (n - 1);
     const series = elevs.map(function (e, i) { return { d: i * step, z: e }; });
-    return { series: series, totalM: totalM };
+    return { series: series, totalM: totalM, geom: inputGeom };
   }
+
+  // Retained for hover interpolation between chart and map.
+  let lastSeries = null, lastTotalM = 0, lastGeom = null;
+
+  // Chart layout retained so the hover handler maps cursor x -> distance identically.
+  let chartLayout = null;
 
   function renderChart(series, totalM) {
     const W = 1000, H = 240, padL = 8, padR = 8, padT = 14, padB = 22;
@@ -331,23 +341,24 @@ require([
     let zMin = Infinity, zMax = -Infinity;
     for (const p of series) { if (p.z < zMin) zMin = p.z; if (p.z > zMax) zMax = p.z; }
     const zRange = (zMax - zMin) || 1;
-    // Pad the vertical range a touch so the curve isn't flush to the edges.
     const zLo = zMin - zRange * 0.08, zHi = zMax + zRange * 0.08;
     const zSpan = zHi - zLo;
 
     const x = function (d) { return padL + (d / totalM) * innerW; };
     const y = function (z) { return padT + (1 - (z - zLo) / zSpan) * innerH; };
 
-    let line = "", area = "";
+    chartLayout = { W: W, H: H, padL: padL, padR: padR, padT: padT, innerW: innerW,
+                    innerH: innerH, totalM: totalM, x: x, y: y };
+
+    let line = "";
     series.forEach(function (p, i) {
       const px = x(p.d).toFixed(1), py = y(p.z).toFixed(1);
       line += (i === 0 ? "M" : "L") + px + " " + py + " ";
     });
-    area = "M" + x(0).toFixed(1) + " " + (padT + innerH).toFixed(1) + " " +
+    const area = "M" + x(0).toFixed(1) + " " + (padT + innerH).toFixed(1) + " " +
            line.replace(/^M/, "L") +
            "L" + x(totalM).toFixed(1) + " " + (padT + innerH).toFixed(1) + " Z";
 
-    // Gridlines at min / mid / max elevation.
     const mid = (zMin + zMax) / 2;
     function gridRow(z) {
       const py = y(z).toFixed(1);
@@ -359,7 +370,7 @@ require([
     }
 
     const svg =
-      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
+      '<svg id="chartSvg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
       '<defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">' +
       '<stop offset="0%" stop-color="#d7ff3e" stop-opacity="0.35"/>' +
       '<stop offset="100%" stop-color="#d7ff3e" stop-opacity="0.02"/>' +
@@ -368,15 +379,27 @@ require([
       '<path d="' + area + '" fill="url(#fill)" stroke="none"/>' +
       '<path d="' + line + '" fill="none" stroke="#d7ff3e" stroke-width="2.5" ' +
       'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>' +
+      // Hover overlay (hidden until mouse-move). preserveAspectRatio="none" scales x
+      // non-uniformly, so we keep the guide as a full-height line and let the dot scale.
+      '<g id="hoverG" style="display:none">' +
+      '<line id="hoverLine" y1="' + padT + '" y2="' + (padT + innerH) + '" ' +
+      'stroke="#ffffff" stroke-width="1" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>' +
+      '<circle id="hoverDot" r="4" fill="#ffffff" stroke="#0b0f0e" stroke-width="1.5" vector-effect="non-scaling-stroke"/>' +
+      '<text id="hoverTxt" fill="#0b0f0e" font-family="Spline Sans Mono, monospace" ' +
+      'font-size="12" font-weight="600" text-anchor="middle"></text>' +
+      '<rect id="hoverBg" rx="3" fill="#d7ff3e" opacity="0.95"/>' +
+      '</g>' +
       '</svg>';
 
     chartHost.innerHTML = svg;
+    attachHover(series);
   }
 
   function updateStats() {
     const built = buildSeries();
-    if (!built) { resetStats(); clearChart(); return; }
+    if (!built) { resetStats(); clearChart(); lastSeries = null; return; }
     const series = built.series, totalM = built.totalM;
+    lastSeries = series; lastTotalM = totalM; lastGeom = built.geom;
 
     let gain = 0, loss = 0, prev = null, min = Infinity, max = -Infinity;
     for (const p of series) {
@@ -395,6 +418,135 @@ require([
     setStat("sMax", isFinite(max) ? Math.round(max) + " m" : "\u2014");
 
     renderChart(series, totalM);
+  }
+
+  // ---- Hover: map chart position -> point on the drawn line -> map marker ----
+
+  const hoverSymbol = {
+    type: "simple-marker",
+    style: "circle",
+    color: [255, 255, 255, 0.95],
+    size: 11,
+    outline: { color: [11, 15, 14, 1], width: 2 }
+  };
+
+  // Flatten the polyline into [x,y] vertices with cumulative geodesic distance,
+  // so we can map a target distance (metres) to an interpolated map location.
+  function flattenPath(geom) {
+    if (!geom || !geom.paths || !geom.paths.length) return null;
+    const path = geom.paths[0];
+    const sr = geom.spatialReference;
+    const cum = [0];
+    for (let i = 1; i < path.length; i++) {
+      const seg = new Polyline({
+        spatialReference: sr,
+        paths: [[path[i - 1], path[i]]]
+      });
+      let segLen = 0;
+      try { segLen = Math.abs(geometryEngine.geodesicLength(seg, "meters")) || 0; }
+      catch (e) { segLen = 0; }
+      cum.push(cum[i - 1] + segLen);
+    }
+    return { path: path, cum: cum, sr: sr };
+  }
+
+  // Given a distance in metres, return an interpolated map Point along the path.
+  function pointAtDistance(flat, targetM) {
+    if (!flat) return null;
+    const cum = flat.cum, path = flat.path;
+    const total = cum[cum.length - 1] || 1;
+    const t = Math.max(0, Math.min(targetM, total));
+    // Find the segment containing t.
+    let i = 1;
+    while (i < cum.length && cum[i] < t) i++;
+    if (i >= cum.length) i = cum.length - 1;
+    const segStart = cum[i - 1], segEnd = cum[i];
+    const segLen = (segEnd - segStart) || 1;
+    const f = (t - segStart) / segLen;
+    const a = path[i - 1], b = path[i];
+    const px = a[0] + (b[0] - a[0]) * f;
+    const py = a[1] + (b[1] - a[1]) * f;
+    return new Point({ x: px, y: py, spatialReference: flat.sr });
+  }
+
+  let hoverGraphic = null;
+  function showHoverOnMap(pt) {
+    if (!pt) return;
+    if (!hoverGraphic) {
+      hoverGraphic = new Graphic({ geometry: pt, symbol: hoverSymbol });
+      hoverLayer.add(hoverGraphic);
+    } else {
+      hoverGraphic.geometry = pt;
+    }
+  }
+  function hideHoverOnMap() {
+    if (hoverGraphic) { hoverLayer.remove(hoverGraphic); hoverGraphic = null; }
+  }
+
+  function attachHover(series) {
+    const svg = document.getElementById("chartSvg");
+    if (!svg || !chartLayout) return;
+    const g = document.getElementById("hoverG");
+    const vline = document.getElementById("hoverLine");
+    const dot = document.getElementById("hoverDot");
+    const txt = document.getElementById("hoverTxt");
+    const bg = document.getElementById("hoverBg");
+    const flat = flattenPath(lastGeom);
+
+    function elevAtDistance(d) {
+      // series is uniform in distance; interpolate elevation between samples.
+      const step = chartLayout.totalM / (series.length - 1);
+      const idx = d / step;
+      const i0 = Math.floor(idx), i1 = Math.min(i0 + 1, series.length - 1);
+      const f = idx - i0;
+      return series[i0].z + (series[i1].z - series[i0].z) * f;
+    }
+
+    function onMove(evt) {
+      const rect = svg.getBoundingClientRect();
+      const clientX = (evt.touches ? evt.touches[0].clientX : evt.clientX);
+      const relX = (clientX - rect.left) / rect.width;          // 0..1 across host
+      // Map host fraction to viewBox x, then to distance.
+      const vbX = relX * chartLayout.W;
+      const frac = Math.max(0, Math.min(1,
+        (vbX - chartLayout.padL) / chartLayout.innerW));
+      const d = frac * chartLayout.totalM;
+      const z = elevAtDistance(d);
+
+      // Position the SVG overlay (in viewBox coords).
+      const px = chartLayout.x(d), py = chartLayout.y(z);
+      g.style.display = "";
+      vline.setAttribute("x1", px); vline.setAttribute("x2", px);
+      dot.setAttribute("cx", px); dot.setAttribute("cy", py);
+      const label = (d / 1000).toFixed(2) + " km  \u2022  " + Math.round(z) + " m";
+      txt.textContent = label;
+      // Keep the readout inside the chart horizontally.
+      let tx = px;
+      const halfW = 70;
+      if (tx < chartLayout.padL + halfW) tx = chartLayout.padL + halfW;
+      if (tx > chartLayout.W - chartLayout.padR - halfW) tx = chartLayout.W - chartLayout.padR - halfW;
+      txt.setAttribute("x", tx);
+      txt.setAttribute("y", chartLayout.padT + 2);
+      // Background pill behind text.
+      const tb = txt.getBBox();
+      bg.setAttribute("x", tb.x - 8);
+      bg.setAttribute("y", tb.y - 3);
+      bg.setAttribute("width", tb.width + 16);
+      bg.setAttribute("height", tb.height + 6);
+      // Re-stack so text sits above its pill.
+      txt.parentNode.appendChild(txt);
+
+      // Drop the marker on the map.
+      showHoverOnMap(pointAtDistance(flat, d));
+    }
+
+    function onLeave() { g.style.display = "none"; hideHoverOnMap(); }
+
+    svg.addEventListener("mousemove", onMove);
+    svg.addEventListener("touchmove", onMove, { passive: true });
+    svg.addEventListener("mouseleave", onLeave);
+    svg.addEventListener("touchend", onLeave);
+    svg.style.cursor = "crosshair";
   }
 
   // Watchers are re-bound whenever the widget is rebuilt for a new view.
@@ -444,6 +596,8 @@ require([
     drawBtn.classList.remove("active");
     resetStats();
     clearChart();
+    hideHoverOnMap();
+    lastSeries = null; lastGeom = null;
   });
 
   document.getElementById("dockClose").addEventListener("click", function () {
