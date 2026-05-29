@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Terrain Profiler</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="https://js.arcgis.com/4.30/esri/themes/dark/main.css" />
+<script src="https://js.arcgis.com/4.30/"></script>
+
+<style>
+  :root {
+    --ink: #0b0f0e;
+    --panel: #11201c;
+    --line: #1f3a32;
+    --accent: #d7ff3e;
+    --accent-dim: #93b02a;
+    --text: #e7f0ec;
+    --muted: #7e958c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Archivo", sans-serif;
+    background: var(--ink);
+    color: var(--text);
+    overflow: hidden;
+  }
+
+  #viewDiv { position: absolute; inset: 0; }
+
+  /* Header bar */
+  .topbar {
+    position: absolute; top: 0; left: 0; right: 0;
+    z-index: 20;
+    display: flex; align-items: center; gap: 18px;
+    padding: 16px 22px;
+    background: linear-gradient(180deg, rgba(11,15,14,.92) 0%, rgba(11,15,14,0) 100%);
+    pointer-events: none;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand .mark {
+    font-weight: 800; font-size: 22px; letter-spacing: -.5px;
+    color: var(--text);
+  }
+  .brand .mark b { color: var(--accent); }
+  .brand .tag {
+    font-family: "Spline Sans Mono", monospace;
+    font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* Control panel */
+  .panel {
+    position: absolute; top: 70px; left: 18px;
+    z-index: 20; width: 268px;
+    background: rgba(17,32,28,.86);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px;
+  }
+  .panel h2 {
+    font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 14px; font-weight: 600;
+  }
+  .btn {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; cursor: pointer;
+    padding: 12px 14px; margin-bottom: 9px;
+    background: transparent; color: var(--text);
+    border: 1px solid var(--line); border-radius: 10px;
+    font-family: "Archivo", sans-serif; font-size: 14px; font-weight: 600;
+    transition: all .18s ease;
+  }
+  .btn:hover { border-color: var(--accent-dim); transform: translateY(-1px); }
+  .btn.primary {
+    background: var(--accent); color: var(--ink); border-color: var(--accent);
+  }
+  .btn.primary:hover { background: #c4f02a; }
+  .btn .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+    flex: none;
+  }
+  .btn.primary .dot { background: var(--ink); }
+
+  .field { margin-top: 16px; }
+  .field label {
+    display: block; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  select {
+    width: 100%; padding: 10px 12px;
+    background: var(--ink); color: var(--text);
+    border: 1px solid var(--line); border-radius: 9px;
+    font-family: "Spline Sans Mono", monospace; font-size: 13px;
+    cursor: pointer;
+  }
+
+  .hint {
+    margin-top: 16px; padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font-family: "Spline Sans Mono", monospace;
+    font-size: 11px; line-height: 1.6; color: var(--muted);
+  }
+  .hint b { color: var(--accent); font-weight: 600; }
+
+  /* Profile dock */
+  .dock {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    z-index: 20;
+    background: rgba(11,15,14,.94);
+    backdrop-filter: blur(14px);
+    border-top: 1px solid var(--line);
+    transform: translateY(100%);
+    transition: transform .35s cubic-bezier(.2,.8,.2,1);
+    max-height: 46vh;
+  }
+  .dock.open { transform: translateY(0); }
+  .dock-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 22px; border-bottom: 1px solid var(--line);
+  }
+  .dock-head .t {
+    font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+  }
+  .dock-close {
+    cursor: pointer; background: none; border: none; color: var(--muted);
+    font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px;
+    transition: color .15s;
+  }
+  .dock-close:hover { color: var(--accent); }
+  .profile-host { padding: 6px 14px 14px; }
+
+  /* Stats strip */
+  .stats {
+    display: flex; gap: 0; flex-wrap: wrap;
+    padding: 0 22px 14px;
+  }
+  .stat {
+    flex: 1; min-width: 110px; padding: 4px 0;
+    border-right: 1px solid var(--line);
+  }
+  .stat:last-child { border-right: none; }
+  .stat .v {
+    font-family: "Spline Sans Mono", monospace;
+    font-size: 22px; font-weight: 600; color: var(--accent);
+  }
+  .stat .k {
+    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); margin-top: 2px;
+  }
+
+  /* Esri widget theming */
+  .esri-elevation-profile { background: transparent !important; border: none !important; }
+  .esri-elevation-profile__container { background: transparent !important; }
+
+  @media (max-width: 640px) {
+    .panel { width: calc(100% - 36px); top: 64px; }
+    .dock { max-height: 52vh; }
+  }
+</style>
+</head>
+<body>
+
+<div id="viewDiv"></div>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="mark">TERRAIN<b>·</b>PROFILER</span>
+    <span class="tag">elevation along any path</span>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Draw a Path</h2>
+  <button class="btn primary" id="drawBtn"><span class="dot"></span>New line profile</button>
+  <button class="btn" id="clearBtn"><span class="dot"></span>Clear</button>
+
+  <div class="field">
+    <label for="basemapSel">Basemap</label>
+    <select id="basemapSel">
+      <option value="satellite">Imagery</option>
+      <option value="hybrid">Imagery + Labels</option>
+      <option value="topo-vector" selected>Topographic</option>
+      <option value="streets-night-vector">Streets (Night)</option>
+      <option value="gray-vector">Light Gray</option>
+      <option value="dark-gray-vector">Dark Gray</option>
+    </select>
+  </div>
+
+  <div class="hint">
+    Click <b>New line profile</b>, then click points on the map to trace a route. Double-click to finish. The chart shows elevation along the line.
+  </div>
+</div>
+
+<div class="dock" id="dock">
+  <div class="dock-head">
+    <span class="t">Elevation Profile</span>
+    <button class="dock-close" id="dockClose">×</button>
+  </div>
+  <div class="stats" id="stats">
+    <div class="stat"><div class="v" id="sLen">—</div><div class="k">Distance</div></div>
+    <div class="stat"><div class="v" id="sGain">—</div><div class="k">Gain</div></div>
+    <div class="stat"><div class="v" id="sLoss">—</div><div class="k">Loss</div></div>
+    <div class="stat"><div class="v" id="sMin">—</div><div class="k">Min Elev</div></div>
+    <div class="stat"><div class="v" id="sMax">—</div><div class="k">Max Elev</div></div>
+  </div>
+  <div class="profile-host" id="profileHost"></div>
+</div>
+
+<script>
+require([
+  "esri/Map",
+  "esri/views/MapView",
+  "esri/widgets/ElevationProfile",
+  "esri/widgets/Sketch/SketchViewModel",
+  "esri/layers/GraphicsLayer",
+  "esri/Graphic"
+], function (Map, MapView, ElevationProfile, SketchViewModel, GraphicsLayer, Graphic) {
+
+  const graphics = new GraphicsLayer();
+  const map = new Map({ basemap: "topo-vector", layers: [graphics] });
+
+  const view = new MapView({
+    container: "viewDiv",
+    map: map,
+    center: [-119.5383, 37.8651], // Yosemite — nice terrain
+    zoom: 11,
+    ui: { components: ["zoom", "compass"] }
+  });
+
+  // Elevation profile widget — ground + drawn-line input
+  const elevationProfile = new ElevationProfile({
+    view: view,
+    container: "profileHost",
+    profiles: [{ type: "ground", color: "#d7ff3e" }],
+    visibleElements: {
+      legend: false,
+      clearButton: false,
+      settingsButton: false,
+      sketchButton: false,
+      selectButton: false,
+      uniformChartScalingToggle: true
+    }
+  });
+
+  const lineSymbol = {
+    type: "simple-line",
+    color: [215, 255, 62, 0.95],
+    width: 3,
+    cap: "round",
+    join: "round"
+  };
+
+  const sketchVM = new SketchViewModel({
+    view: view,
+    layer: graphics,
+    polylineSymbol: lineSymbol,
+    updateOnGraphicClick: false
+  });
+
+  const dock = document.getElementById("dock");
+
+  function setStat(id, val) { document.getElementById(id).textContent = val; }
+
+  function computeStats(geometry) {
+    // geometry is a polyline in web mercator; use ground samples from widget viewModel
+    const m = elevationProfile.viewModel.profiles.getItemAt(0);
+    if (!m || !m.samples || !m.samples.length) return;
+    const s = m.samples;
+    let gain = 0, loss = 0, min = Infinity, max = -Infinity;
+    for (let i = 0; i < s.length; i++) {
+      const e = s[i].elevation;
+      if (e == null) continue;
+      if (e < min) min = e;
+      if (e > max) max = e;
+      if (i > 0 && s[i-1].elevation != null) {
+        const d = e - s[i-1].elevation;
+        if (d > 0) gain += d; else loss -= d;
+      }
+    }
+    const distM = s[s.length - 1].distance;
+    setStat("sLen", (distM / 1000).toFixed(2) + " km");
+    setStat("sGain", Math.round(gain) + " m");
+    setStat("sLoss", Math.round(loss) + " m");
+    setStat("sMin", Math.round(min) + " m");
+    setStat("sMax", Math.round(max) + " m");
+  }
+
+  function startDraw() {
+    graphics.removeAll();
+    sketchVM.create("polyline");
+    dock.classList.add("open");
+  }
+
+  sketchVM.on("create", function (evt) {
+    if (evt.state === "complete") {
+      const g = evt.graphic;
+      // feed the drawn line into the widget as the active input
+      elevationProfile.input = new Graphic({ geometry: g.geometry });
+      // stats recompute once samples are ready
+      const handle = elevationProfile.viewModel.watch("state", function (st) {
+        if (st === "created" || st === "interaction") {
+          computeStats(g.geometry);
+          handle.remove();
+        }
+      });
+      // fallback recompute
+      setTimeout(function () { computeStats(g.geometry); }, 1500);
+    }
+  });
+
+  // UI wiring
+  document.getElementById("drawBtn").addEventListener("click", startDraw);
+  document.getElementById("clearBtn").addEventListener("click", function () {
+    sketchVM.cancel();
+    graphics.removeAll();
+    elevationProfile.input = null;
+    dock.classList.remove("open");
+    ["sLen","sGain","sLoss","sMin","sMax"].forEach(id => setStat(id, "—"));
+  });
+  document.getElementById("dockClose").addEventListener("click", function () {
+    dock.classList.remove("open");
+  });
+  document.getElementById("basemapSel").addEventListener("change", function (e) {
+    map.basemap = e.target.value;
+  });
+});
+</script>
+</body>
+</html>
