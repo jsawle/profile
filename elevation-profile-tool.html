@@ -42,23 +42,36 @@
     pointer-events: none;
   }
   .brand { display: flex; align-items: baseline; gap: 10px; }
-  .brand .mark {
-    font-weight: 800; font-size: 22px; letter-spacing: -.5px; color: var(--text);
-  }
+  .brand .mark { font-weight: 800; font-size: 22px; letter-spacing: -.5px; color: var(--text); }
   .brand .mark b { color: var(--accent); }
   .brand .tag {
     font-family: "Spline Sans Mono", monospace;
     font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: var(--muted);
   }
 
+  /* 2D / 3D segmented toggle */
+  .viewtoggle {
+    position: absolute; top: 16px; right: 22px;
+    z-index: 21; pointer-events: auto;
+    display: flex; padding: 4px;
+    background: rgba(17,32,28,.86);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--line); border-radius: 11px;
+  }
+  .viewtoggle button {
+    cursor: pointer; border: none; background: transparent;
+    color: var(--muted); font-family: "Spline Sans Mono", monospace;
+    font-size: 13px; font-weight: 600; letter-spacing: 1px;
+    padding: 8px 16px; border-radius: 8px; transition: all .18s ease;
+  }
+  .viewtoggle button.on { background: var(--accent); color: var(--ink); }
+
   .panel {
     position: absolute; top: 70px; left: 18px;
     z-index: 20; width: 268px;
     background: rgba(17,32,28,.86);
     backdrop-filter: blur(14px);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 18px;
+    border: 1px solid var(--line); border-radius: 14px; padding: 18px;
   }
   .panel h2 {
     font-size: 11px; letter-spacing: 2.5px; text-transform: uppercase;
@@ -153,6 +166,11 @@
   </div>
 </div>
 
+<div class="viewtoggle" id="viewToggle">
+  <button id="btn2d" class="on">2D</button>
+  <button id="btn3d">3D</button>
+</div>
+
 <div class="panel">
   <h2>Draw a Path</h2>
   <button class="btn primary" id="drawBtn"><span class="dot"></span>New line profile</button>
@@ -171,7 +189,7 @@
   </div>
 
   <div class="hint">
-    Click <b>New line profile</b>, then click points on the map to trace a route. Double-click to finish &mdash; the chart draws automatically.
+    Click <b>New line profile</b>, then click points on the map to trace a route. Double-click to finish. Flip <b>2D / 3D</b> any time &mdash; profiling works in both views.
   </div>
 </div>
 
@@ -194,39 +212,51 @@
 require([
   "esri/Map",
   "esri/views/MapView",
+  "esri/views/SceneView",
   "esri/widgets/ElevationProfile",
   "esri/core/reactiveUtils"
-], function (Map, MapView, ElevationProfile, reactiveUtils) {
+], function (Map, MapView, SceneView, ElevationProfile, reactiveUtils) {
 
+  // One shared map. ground "world-elevation" feeds the ground profile in BOTH views.
   const map = new Map({ basemap: "topo-vector", ground: "world-elevation" });
 
-  const view = new MapView({
-    container: "viewDiv",
-    map: map,
-    center: [-119.5383, 37.8651], // Yosemite -- strong terrain
-    zoom: 12,
+  const CONTAINER = "viewDiv";
+  const start = { center: [-119.5383, 37.8651], zoom: 12 }; // Yosemite
+
+  // Build both views up front; only one holds the container at a time.
+  const mapView = new MapView({
+    container: CONTAINER, map: map,
+    center: start.center, zoom: start.zoom,
     ui: { components: ["zoom", "compass"] }
   });
 
-  // Let the widget own drawing + sampling. We just style around it.
-  const elevationProfile = new ElevationProfile({
-    view: view,
-    container: "profileHost",
-    profiles: [{ type: "ground", color: "#d7ff3e", title: "Ground" }],
-    unit: "metric",
-    visibleElements: {
-      legend: false,
-      clearButton: true,
-      settingsButton: false,
-      sketchButton: true,
-      selectButton: false,
-      uniformChartScalingToggle: false
-    }
+  const sceneView = new SceneView({
+    map: map,
+    center: start.center, zoom: start.zoom,
+    ui: { components: ["zoom", "compass", "navigation-toggle"] }
   });
+
+  let activeView = mapView;
+
+  // ---- Elevation profile widget (re-pointed at the active view on switch) ----
+  function profileConfig(view) {
+    return {
+      view: view,
+      container: "profileHost",
+      profiles: [{ type: "ground", color: "#d7ff3e", title: "Ground" }],
+      unit: "metric",
+      visibleElements: {
+        legend: false, clearButton: true, settingsButton: false,
+        sketchButton: true, selectButton: false, uniformChartScalingToggle: false
+      }
+    };
+  }
+
+  let elevationProfile = new ElevationProfile(profileConfig(activeView));
+  let vm = elevationProfile.viewModel;
 
   const dock = document.getElementById("dock");
   const drawBtn = document.getElementById("drawBtn");
-  const vm = elevationProfile.viewModel;
 
   function setStat(id, val) { document.getElementById(id).textContent = val; }
   function resetStats() {
@@ -254,37 +284,36 @@ require([
     setStat("sMax", isFinite(max) ? Math.round(max) + " m" : "\u2014");
   }
 
-  // Recompute whenever the ground profile samples change.
-  reactiveUtils.watch(
-    function () {
-      const g = vm.profiles.find(function (p) { return p.type === "ground"; });
-      return g ? g.samples : null;
-    },
-    function () { updateStats(); }
-  );
+  // Watchers are re-bound whenever the widget is rebuilt for a new view.
+  let sampleHandle = null, stateHandle = null;
+  function bindWatchers() {
+    if (sampleHandle) { sampleHandle.remove(); }
+    if (stateHandle) { stateHandle.remove(); }
+    sampleHandle = reactiveUtils.watch(
+      function () {
+        const g = vm.profiles.find(function (p) { return p.type === "ground"; });
+        return g ? g.samples : null;
+      },
+      function () { updateStats(); }
+    );
+    stateHandle = reactiveUtils.watch(
+      function () { return vm.state; },
+      function (state) {
+        if (state === "creating" || state === "created" || state === "interaction") {
+          dock.classList.add("open");
+        }
+        if (state === "created" || state === "interaction") { drawBtn.classList.remove("active"); }
+        if (state === "empty") { resetStats(); drawBtn.classList.remove("active"); }
+      }
+    );
+  }
+  bindWatchers();
 
-  // Reflect widget progress in the dock + button.
-  reactiveUtils.watch(
-    function () { return vm.state; },
-    function (state) {
-      if (state === "creating" || state === "created" || state === "interaction") {
-        dock.classList.add("open");
-      }
-      if (state === "created" || state === "interaction") {
-        drawBtn.classList.remove("active");
-      }
-      if (state === "empty") {
-        resetStats();
-        drawBtn.classList.remove("active");
-      }
-    }
-  );
-
-  // Custom button triggers the widget's own create flow.
+  // ---- Draw / clear ----
   drawBtn.addEventListener("click", function () {
     dock.classList.add("open");
     drawBtn.classList.add("active");
-    if (typeof vm.start === "function") { vm.start(); }   // begins interactive line drawing
+    if (typeof vm.start === "function") { vm.start(); }
   });
 
   document.getElementById("clearBtn").addEventListener("click", function () {
@@ -301,6 +330,59 @@ require([
   document.getElementById("basemapSel").addEventListener("change", function (e) {
     map.basemap = e.target.value;
   });
+
+  // ---- 2D / 3D switch via container reassignment ----
+  const btn2d = document.getElementById("btn2d");
+  const btn3d = document.getElementById("btn3d");
+
+  function switchTo(target) {
+    if (target === activeView) return;
+
+    // Preserve the drawn profile geometry across the view swap.
+    const savedInput = elevationProfile.input || (vm ? vm.input : null);
+
+    // Carry the camera/extent across.
+    const vp = activeView.viewpoint ? activeView.viewpoint.clone() : null;
+
+    // Detach current view from the DOM container.
+    activeView.container = null;
+
+    // Destroy the widget bound to the old view and rebuild on the new one.
+    elevationProfile.destroy();
+
+    activeView = target;
+    if (vp) {
+      // Adjust scale for Web Mercator distortion when moving between projections.
+      try {
+        const lat = vp.targetGeometry && vp.targetGeometry.latitude ? vp.targetGeometry.latitude : 0;
+        const factor = Math.cos((lat * Math.PI) / 180) || 1;
+        if (activeView.type === "3d") { vp.scale = vp.scale / factor; }
+        else { vp.scale = vp.scale * factor; }
+      } catch (e) { /* ignore */ }
+      activeView.viewpoint = vp;
+    }
+    activeView.container = CONTAINER;
+
+    elevationProfile = new ElevationProfile(profileConfig(activeView));
+    vm = elevationProfile.viewModel;
+    bindWatchers();
+
+    // Re-apply the previously drawn line so the profile persists across views.
+    if (savedInput) {
+      elevationProfile.input = savedInput;
+      dock.classList.add("open");
+      setTimeout(updateStats, 600);
+    } else {
+      resetStats();
+    }
+
+    const is3D = activeView.type === "3d";
+    btn3d.classList.toggle("on", is3D);
+    btn2d.classList.toggle("on", !is3D);
+  }
+
+  btn2d.addEventListener("click", function () { switchTo(mapView); });
+  btn3d.addEventListener("click", function () { switchTo(sceneView); });
 });
 </script>
 </body>
