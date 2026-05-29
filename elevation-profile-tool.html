@@ -137,10 +137,10 @@
     font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; transition: color .15s;
   }
   .dock-close:hover { color: var(--accent); }
-  .profile-host { padding: 4px 10px 12px; height: 230px; }
-  /* Make the widget's internal chart fill the host so the canvas has real height */
-  .profile-host .esri-elevation-profile,
-  .profile-host .esri-elevation-profile__container { height: 100% !important; background: transparent !important; }
+  .profile-host { padding: 4px 10px 12px; height: 240px; }
+  /* Let the widget's own root element fill the host without targeting guessed
+     internal class names (which vary by SDK build). */
+  .profile-host > * { height: 100%; }
 
   .stats { display: flex; gap: 0; flex-wrap: wrap; padding: 8px 22px 6px; }
   .stat { flex: 1; min-width: 100px; padding: 4px 0; border-right: 1px solid var(--line); }
@@ -266,43 +266,38 @@ require([
     ["sLen","sGain","sLoss","sMin","sMax"].forEach(function (id) { setStat(id, "\u2014"); });
   }
 
-  // Only compute once the profile has fully generated (progress === 1).
-  // Use the widget's own statistics object for distance/min/max — authoritative
-  // and complete — and derive gain/loss from the finished sample array.
+  // Compute everything directly from the samples array (documented + reliable).
+  // Each sample has { distance (m, along-line), elevation (m) }.
   function updateStats() {
     const ground = vm.profiles.find(function (p) { return p.type === "ground"; });
     if (!ground || !ground.samples || !ground.samples.length) { resetStats(); return; }
 
-    const stats = ground.statistics;          // {maxDistance, minElevation, maxElevation, ...}
-    const s = ground.samples;
+    // Sort a shallow copy by distance so gain/loss accumulate in path order,
+    // regardless of the order the widget populated the array.
+    const s = ground.samples
+      .filter(function (x) { return x && x.elevation != null && x.distance != null; })
+      .slice()
+      .sort(function (a, b) { return a.distance - b.distance; });
 
-    // Cumulative gain / loss across the finished samples.
+    if (!s.length) { resetStats(); return; }
+
     let gain = 0, loss = 0, prev = null;
-    let min = Infinity, max = -Infinity;
+    let min = Infinity, max = -Infinity, maxDist = 0;
     for (const samp of s) {
       const e = samp.elevation;
-      if (e == null) continue;
       if (e < min) min = e;
       if (e > max) max = e;
+      if (samp.distance > maxDist) maxDist = samp.distance;   // furthest point along line
       if (prev != null) { const d = e - prev; if (d > 0) gain += d; else loss -= d; }
       prev = e;
     }
 
-    // Distance: prefer statistics.maxDistance (metres); fall back to last sample.
-    let distM = 0;
-    if (stats && stats.maxDistance != null) { distM = stats.maxDistance; }
-    else if (s[s.length - 1].distance != null) { distM = s[s.length - 1].distance; }
-
-    // Min/max: prefer statistics; fall back to scanned values.
-    const minE = (stats && stats.minElevation != null) ? stats.minElevation : min;
-    const maxE = (stats && stats.maxElevation != null) ? stats.maxElevation : max;
-
-    const distKm = distM / 1000;
-    setStat("sLen", distKm < 1 ? Math.round(distM) + " m" : distKm.toFixed(2) + " km");
+    const distKm = maxDist / 1000;
+    setStat("sLen", distKm < 1 ? Math.round(maxDist) + " m" : distKm.toFixed(2) + " km");
     setStat("sGain", Math.round(gain) + " m");
     setStat("sLoss", Math.round(loss) + " m");
-    setStat("sMin", isFinite(minE) ? Math.round(minE) + " m" : "\u2014");
-    setStat("sMax", isFinite(maxE) ? Math.round(maxE) + " m" : "\u2014");
+    setStat("sMin", isFinite(min) ? Math.round(min) + " m" : "\u2014");
+    setStat("sMax", isFinite(max) ? Math.round(max) + " m" : "\u2014");
   }
 
   // Watchers are re-bound whenever the widget is rebuilt for a new view.
@@ -339,6 +334,11 @@ require([
   bindWatchers();
 
   // ---- Draw / clear ----
+  // Open the dock immediately so the chart host has real height the moment the
+  // widget renders into it (a translated/hidden host measures as 0 and the chart
+  // canvas never sizes — the cause of the "chart sometimes blank" behaviour).
+  dock.classList.add("open");
+
   drawBtn.addEventListener("click", function () {
     dock.classList.add("open");
     drawBtn.classList.add("active");
