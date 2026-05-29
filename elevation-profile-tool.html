@@ -137,10 +137,19 @@
     font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; transition: color .15s;
   }
   .dock-close:hover { color: var(--accent); }
-  .profile-host { padding: 4px 10px 12px; height: 240px; }
-  /* Let the widget's own root element fill the host without targeting guessed
-     internal class names (which vary by SDK build). */
-  .profile-host > * { height: 100%; }
+  .profile-host { padding: 4px 16px 16px; height: 240px; }
+  #chartHost svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  /* Widget retained for drawing + sampling only; keep it functional but invisible.
+     Off-screen rather than display:none so its interaction layer still works. */
+  #profileHost {
+    position: absolute; width: 600px; height: 300px;
+    left: -10000px; top: 0; pointer-events: none; opacity: 0;
+  }
+  .chart-empty {
+    display: flex; align-items: center; justify-content: center; height: 100%;
+    font-family: "Spline Sans Mono", monospace; font-size: 12px;
+    letter-spacing: 1px; color: var(--muted); text-transform: uppercase;
+  }
 
   .stats { display: flex; gap: 0; flex-wrap: wrap; padding: 8px 22px 6px; }
   .stat { flex: 1; min-width: 100px; padding: 4px 0; border-right: 1px solid var(--line); }
@@ -208,7 +217,9 @@
     <div class="stat"><div class="v" id="sMin">&mdash;</div><div class="k">Min Elev</div></div>
     <div class="stat"><div class="v" id="sMax">&mdash;</div><div class="k">Max Elev</div></div>
   </div>
-  <div class="profile-host" id="profileHost"></div>
+  <div class="profile-host" id="chartHost"></div>
+  <!-- Widget's own chart is hidden off-screen; we use it only for drawing + sampling -->
+  <div id="profileHost" aria-hidden="true"></div>
 </div>
 
 <script>
@@ -217,8 +228,10 @@ require([
   "esri/views/MapView",
   "esri/views/SceneView",
   "esri/widgets/ElevationProfile",
+  "esri/geometry/geometryEngine",
+  "esri/geometry/Polyline",
   "esri/core/reactiveUtils"
-], function (Map, MapView, SceneView, ElevationProfile, reactiveUtils) {
+], function (Map, MapView, SceneView, ElevationProfile, geometryEngine, Polyline, reactiveUtils) {
 
   // One shared map. ground "world-elevation" feeds the ground profile in BOTH views.
   const map = new Map({ basemap: "topo-vector", ground: "world-elevation" });
@@ -266,38 +279,122 @@ require([
     ["sLen","sGain","sLoss","sMin","sMax"].forEach(function (id) { setStat(id, "\u2014"); });
   }
 
-  // Compute everything directly from the samples array (documented + reliable).
-  // Each sample has { distance (m, along-line), elevation (m) }.
-  function updateStats() {
+  const chartHost = document.getElementById("chartHost");
+  function clearChart(msg) {
+    chartHost.innerHTML = '<div class="chart-empty">' + (msg || "Draw a line to see its elevation profile") + "</div>";
+  }
+  clearChart();
+
+  // Build a reliable {distance, elevation} series.
+  // The widget's ground samples carry correct ELEVATION in path order, but in a
+  // SceneView the per-sample `distance` collapses. So we derive distance from the
+  // input geometry's true geodesic length and spread the samples evenly along it
+  // (the widget samples the ground at uniform spacing along the drawn line).
+  function buildSeries() {
     const ground = vm.profiles.find(function (p) { return p.type === "ground"; });
-    if (!ground || !ground.samples || !ground.samples.length) { resetStats(); return; }
+    if (!ground || !ground.samples || !ground.samples.length) return null;
 
-    // Sort a shallow copy by distance so gain/loss accumulate in path order,
-    // regardless of the order the widget populated the array.
-    const s = ground.samples
-      .filter(function (x) { return x && x.elevation != null && x.distance != null; })
-      .slice()
-      .sort(function (a, b) { return a.distance - b.distance; });
+    const elevs = ground.samples
+      .filter(function (x) { return x && x.elevation != null; })
+      .map(function (x) { return x.elevation; });
+    if (elevs.length < 2) return null;
 
-    if (!s.length) { resetStats(); return; }
+    // Total along-line distance from the drawn geometry (metres, geodesic).
+    let totalM = 0;
+    const inputGeom = (elevationProfile.input && elevationProfile.input.geometry) ||
+                      (vm.input && vm.input.geometry) || null;
+    if (inputGeom && inputGeom.type === "polyline") {
+      try {
+        const pl = (inputGeom.spatialReference && inputGeom.spatialReference.isGeographic)
+          ? inputGeom
+          : inputGeom; // geodesicLength handles WebMercator + WGS84
+        totalM = Math.abs(geometryEngine.geodesicLength(pl, "meters")) || 0;
+      } catch (e) { totalM = 0; }
+    }
+    // Fallback: if geometry unavailable, try the max sample distance.
+    if (!totalM) {
+      const ds = ground.samples.map(function (x) { return x.distance || 0; });
+      totalM = Math.max.apply(null, ds) || 0;
+    }
+    if (!totalM) return null;
 
-    let gain = 0, loss = 0, prev = null;
-    let min = Infinity, max = -Infinity, maxDist = 0;
-    for (const samp of s) {
-      const e = samp.elevation;
+    const n = elevs.length;
+    const step = totalM / (n - 1);
+    const series = elevs.map(function (e, i) { return { d: i * step, z: e }; });
+    return { series: series, totalM: totalM };
+  }
+
+  function renderChart(series, totalM) {
+    const W = 1000, H = 240, padL = 8, padR = 8, padT = 14, padB = 22;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+
+    let zMin = Infinity, zMax = -Infinity;
+    for (const p of series) { if (p.z < zMin) zMin = p.z; if (p.z > zMax) zMax = p.z; }
+    const zRange = (zMax - zMin) || 1;
+    // Pad the vertical range a touch so the curve isn't flush to the edges.
+    const zLo = zMin - zRange * 0.08, zHi = zMax + zRange * 0.08;
+    const zSpan = zHi - zLo;
+
+    const x = function (d) { return padL + (d / totalM) * innerW; };
+    const y = function (z) { return padT + (1 - (z - zLo) / zSpan) * innerH; };
+
+    let line = "", area = "";
+    series.forEach(function (p, i) {
+      const px = x(p.d).toFixed(1), py = y(p.z).toFixed(1);
+      line += (i === 0 ? "M" : "L") + px + " " + py + " ";
+    });
+    area = "M" + x(0).toFixed(1) + " " + (padT + innerH).toFixed(1) + " " +
+           line.replace(/^M/, "L") +
+           "L" + x(totalM).toFixed(1) + " " + (padT + innerH).toFixed(1) + " Z";
+
+    // Gridlines at min / mid / max elevation.
+    const mid = (zMin + zMax) / 2;
+    function gridRow(z) {
+      const py = y(z).toFixed(1);
+      return '<line x1="' + padL + '" y1="' + py + '" x2="' + (W - padR) + '" y2="' + py +
+        '" stroke="#1f3a32" stroke-width="1"/>' +
+        '<text x="' + (W - padR) + '" y="' + (parseFloat(py) - 4).toFixed(1) +
+        '" text-anchor="end" fill="#7e958c" font-family="Spline Sans Mono, monospace" font-size="11">' +
+        Math.round(z) + ' m</text>';
+    }
+
+    const svg =
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
+      '<defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#d7ff3e" stop-opacity="0.35"/>' +
+      '<stop offset="100%" stop-color="#d7ff3e" stop-opacity="0.02"/>' +
+      '</linearGradient></defs>' +
+      gridRow(zMax) + gridRow(mid) + gridRow(zMin) +
+      '<path d="' + area + '" fill="url(#fill)" stroke="none"/>' +
+      '<path d="' + line + '" fill="none" stroke="#d7ff3e" stroke-width="2.5" ' +
+      'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>' +
+      '</svg>';
+
+    chartHost.innerHTML = svg;
+  }
+
+  function updateStats() {
+    const built = buildSeries();
+    if (!built) { resetStats(); clearChart(); return; }
+    const series = built.series, totalM = built.totalM;
+
+    let gain = 0, loss = 0, prev = null, min = Infinity, max = -Infinity;
+    for (const p of series) {
+      const e = p.z;
       if (e < min) min = e;
       if (e > max) max = e;
-      if (samp.distance > maxDist) maxDist = samp.distance;   // furthest point along line
       if (prev != null) { const d = e - prev; if (d > 0) gain += d; else loss -= d; }
       prev = e;
     }
 
-    const distKm = maxDist / 1000;
-    setStat("sLen", distKm < 1 ? Math.round(maxDist) + " m" : distKm.toFixed(2) + " km");
+    const distKm = totalM / 1000;
+    setStat("sLen", distKm < 1 ? Math.round(totalM) + " m" : distKm.toFixed(2) + " km");
     setStat("sGain", Math.round(gain) + " m");
     setStat("sLoss", Math.round(loss) + " m");
     setStat("sMin", isFinite(min) ? Math.round(min) + " m" : "\u2014");
     setStat("sMax", isFinite(max) ? Math.round(max) + " m" : "\u2014");
+
+    renderChart(series, totalM);
   }
 
   // Watchers are re-bound whenever the widget is rebuilt for a new view.
@@ -334,14 +431,10 @@ require([
   bindWatchers();
 
   // ---- Draw / clear ----
-  // Open the dock immediately so the chart host has real height the moment the
-  // widget renders into it (a translated/hidden host measures as 0 and the chart
-  // canvas never sizes — the cause of the "chart sometimes blank" behaviour).
-  dock.classList.add("open");
-
   drawBtn.addEventListener("click", function () {
     dock.classList.add("open");
     drawBtn.classList.add("active");
+    clearChart("Click points on the map\u2026 double-click to finish");
     if (typeof vm.start === "function") { vm.start(); }
   });
 
@@ -350,6 +443,7 @@ require([
     dock.classList.remove("open");
     drawBtn.classList.remove("active");
     resetStats();
+    clearChart();
   });
 
   document.getElementById("dockClose").addEventListener("click", function () {
@@ -400,9 +494,12 @@ require([
     if (savedInput) {
       elevationProfile.input = savedInput;
       dock.classList.add("open");
-      setTimeout(updateStats, 600);
+      // New view re-samples the ground; give it a moment, then redraw stats + chart.
+      setTimeout(updateStats, 700);
+      setTimeout(updateStats, 1600);
     } else {
       resetStats();
+      clearChart();
     }
 
     const is3D = activeView.type === "3d";
