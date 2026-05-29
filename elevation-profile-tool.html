@@ -193,6 +193,7 @@
     <select id="basemapSel">
       <option value="satellite">Imagery</option>
       <option value="hybrid">Imagery + Labels</option>
+      <option value="oceans">Oceans</option>
       <option value="topo-vector" selected>Topographic</option>
       <option value="streets-night-vector">Streets (Night)</option>
       <option value="gray-vector">Light Gray</option>
@@ -201,7 +202,7 @@
   </div>
 
   <div class="hint">
-    Click <b>New line profile</b>, then click points on the map to trace a route. Double-click to finish. Flip <b>2D / 3D</b> any time &mdash; profiling works in both views.
+    Click <b>New line profile</b>, then click points on the map to trace a route. Double-click to finish. Flip <b>2D / 3D</b> any time. Cross a coastline or lake and the profile dips below <b>sea level</b> to show water depth.
   </div>
 </div>
 
@@ -236,9 +237,10 @@ require([
   "esri/core/reactiveUtils"
 ], function (Map, MapView, SceneView, ElevationProfile, geometryEngine, Polyline, Point, GraphicsLayer, Graphic, reactiveUtils) {
 
-  // One shared map. ground "world-elevation" feeds the ground profile in BOTH views.
+  // One shared map. ground "world-topobathymetry" = TopoBathy3D: seamless land
+  // elevation + ocean/lake bathymetry, so profiles dip below sea level over water.
   const hoverLayer = new GraphicsLayer({ elevationInfo: { mode: "on-the-ground" } });
-  const map = new Map({ basemap: "topo-vector", ground: "world-elevation", layers: [hoverLayer] });
+  const map = new Map({ basemap: "topo-vector", ground: "world-topobathymetry", layers: [hoverLayer] });
 
   const CONTAINER = "viewDiv";
   const start = { center: [-119.5383, 37.8651], zoom: 12 }; // Yosemite
@@ -341,42 +343,113 @@ require([
     let zMin = Infinity, zMax = -Infinity;
     for (const p of series) { if (p.z < zMin) zMin = p.z; if (p.z > zMax) zMax = p.z; }
     const zRange = (zMax - zMin) || 1;
-    const zLo = zMin - zRange * 0.08, zHi = zMax + zRange * 0.08;
-    const zSpan = zHi - zLo;
+    let zLo = zMin - zRange * 0.08, zHi = zMax + zRange * 0.08;
+
+    // If the profile crosses the sea (some samples below 0), make sure sea level
+    // (z = 0) sits comfortably inside the visible range so it reads clearly.
+    const crossesSea = zMin < 0;
+    if (crossesSea) {
+      if (zHi < 0) zHi = Math.abs(zMin) * 0.05;   // entirely underwater: show a sliver above 0
+      if (zLo > 0) zLo = -zRange * 0.05;          // (shouldn't happen, guard anyway)
+      zHi = Math.max(zHi, 0);
+    }
+    const zSpan = (zHi - zLo) || 1;
 
     const x = function (d) { return padL + (d / totalM) * innerW; };
     const y = function (z) { return padT + (1 - (z - zLo) / zSpan) * innerH; };
+    const floorY = padT + innerH;
 
     chartLayout = { W: W, H: H, padL: padL, padR: padR, padT: padT, innerW: innerW,
                     innerH: innerH, totalM: totalM, x: x, y: y };
 
+    // Terrain curve + filled area down to the chart floor.
     let line = "";
     series.forEach(function (p, i) {
-      const px = x(p.d).toFixed(1), py = y(p.z).toFixed(1);
-      line += (i === 0 ? "M" : "L") + px + " " + py + " ";
+      line += (i === 0 ? "M" : "L") + x(p.d).toFixed(1) + " " + y(p.z).toFixed(1) + " ";
     });
-    const area = "M" + x(0).toFixed(1) + " " + (padT + innerH).toFixed(1) + " " +
+    const area = "M" + x(0).toFixed(1) + " " + floorY.toFixed(1) + " " +
            line.replace(/^M/, "L") +
-           "L" + x(totalM).toFixed(1) + " " + (padT + innerH).toFixed(1) + " Z";
+           "L" + x(totalM).toFixed(1) + " " + floorY.toFixed(1) + " Z";
 
-    const mid = (zMin + zMax) / 2;
-    function gridRow(z) {
-      const py = y(z).toFixed(1);
-      return '<line x1="' + padL + '" y1="' + py + '" x2="' + (W - padR) + '" y2="' + py +
-        '" stroke="#1f3a32" stroke-width="1"/>' +
-        '<text x="' + (W - padR) + '" y="' + (parseFloat(py) - 4).toFixed(1) +
-        '" text-anchor="end" fill="#7e958c" font-family="Spline Sans Mono, monospace" font-size="11">' +
-        Math.round(z) + ' m</text>';
+    // Water body: fill between the sea-level line (top) and the terrain curve
+    // (bottom) across every contiguous stretch where the terrain is below 0.
+    // preserveAspectRatio="none" means we sample the curve densely for a smooth fill.
+    let waterPaths = "";
+    if (crossesSea) {
+      const seaY = y(0);
+      let run = null; // {startX, pts:[]}
+      function flush(endX) {
+        if (!run || !run.pts.length) { run = null; return; }
+        let d = "M" + run.pts[0].x.toFixed(1) + " " + seaY.toFixed(1) + " ";
+        run.pts.forEach(function (pt) { d += "L" + pt.x.toFixed(1) + " " + pt.y.toFixed(1) + " "; });
+        d += "L" + run.pts[run.pts.length - 1].x.toFixed(1) + " " + seaY.toFixed(1) + " Z";
+        waterPaths += '<path d="' + d + '" fill="url(#water)" stroke="none"/>';
+        run = null;
+      }
+      // Walk samples; build runs where z < 0, interpolating the 0-crossing at edges.
+      for (let i = 0; i < series.length; i++) {
+        const p = series[i];
+        const below = p.z < 0;
+        if (below && !run) {
+          run = { pts: [] };
+          // Interpolate crossing from previous (above-water) sample.
+          if (i > 0) {
+            const prev = series[i - 1];
+            const f = (0 - prev.z) / (p.z - prev.z);
+            const cd = prev.d + (p.d - prev.d) * f;
+            run.pts.push({ x: x(cd), y: seaY });
+          }
+          run.pts.push({ x: x(p.d), y: y(p.z) });
+        } else if (below && run) {
+          run.pts.push({ x: x(p.d), y: y(p.z) });
+        } else if (!below && run) {
+          // Interpolate the crossing back up to sea level, then close the run.
+          const prev = series[i - 1];
+          const f = (0 - prev.z) / (p.z - prev.z);
+          const cd = prev.d + (p.d - prev.d) * f;
+          run.pts.push({ x: x(cd), y: seaY });
+          flush();
+        }
+      }
+      flush();
     }
+
+    // Gridlines. Always include 0 (sea level) when the profile crosses it.
+    const mid = (zMin + zMax) / 2;
+    function gridRow(z, isSea) {
+      const py = y(z);
+      const color = isSea ? "#4aa3df" : "#1f3a32";
+      const wdt = isSea ? 1.5 : 1;
+      const dash = isSea ? ' stroke-dasharray="6 4"' : "";
+      const label = isSea ? "Sea level" : (Math.round(z) + " m");
+      const labelFill = isSea ? "#7ec8f0" : "#7e958c";
+      return '<line x1="' + padL + '" y1="' + py.toFixed(1) + '" x2="' + (W - padR) +
+        '" y2="' + py.toFixed(1) + '" stroke="' + color + '" stroke-width="' + wdt + '"' + dash +
+        ' vector-effect="non-scaling-stroke"/>' +
+        '<text x="' + (W - padR) + '" y="' + (py - 4).toFixed(1) +
+        '" text-anchor="end" fill="' + labelFill + '" font-family="Spline Sans Mono, monospace" ' +
+        'font-size="11">' + label + '</text>';
+    }
+
+    let grids = gridRow(zMax) + gridRow(zMin);
+    if (crossesSea) { grids += gridRow(0, true); }
+    else { grids += gridRow(mid); }
 
     const svg =
       '<svg id="chartSvg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
-      '<defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">' +
+      '<defs>' +
+      '<linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">' +
       '<stop offset="0%" stop-color="#d7ff3e" stop-opacity="0.35"/>' +
       '<stop offset="100%" stop-color="#d7ff3e" stop-opacity="0.02"/>' +
-      '</linearGradient></defs>' +
-      gridRow(zMax) + gridRow(mid) + gridRow(zMin) +
+      '</linearGradient>' +
+      '<linearGradient id="water" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#4aa3df" stop-opacity="0.55"/>' +
+      '<stop offset="100%" stop-color="#1d5b87" stop-opacity="0.75"/>' +
+      '</linearGradient>' +
+      '</defs>' +
+      grids +
       '<path d="' + area + '" fill="url(#fill)" stroke="none"/>' +
+      waterPaths +
       '<path d="' + line + '" fill="none" stroke="#d7ff3e" stroke-width="2.5" ' +
       'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>' +
       // Hover overlay (hidden until mouse-move). preserveAspectRatio="none" scales x
