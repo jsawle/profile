@@ -33,7 +33,6 @@
 
   #viewDiv { position: absolute; inset: 0; }
 
-  /* Header bar */
   .topbar {
     position: absolute; top: 0; left: 0; right: 0;
     z-index: 20;
@@ -44,17 +43,14 @@
   }
   .brand { display: flex; align-items: baseline; gap: 10px; }
   .brand .mark {
-    font-weight: 800; font-size: 22px; letter-spacing: -.5px;
-    color: var(--text);
+    font-weight: 800; font-size: 22px; letter-spacing: -.5px; color: var(--text);
   }
   .brand .mark b { color: var(--accent); }
   .brand .tag {
     font-family: "Spline Sans Mono", monospace;
-    font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
-    color: var(--muted);
+    font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: var(--muted);
   }
 
-  /* Control panel */
   .panel {
     position: absolute; top: 70px; left: 18px;
     z-index: 20; width: 268px;
@@ -78,14 +74,10 @@
     transition: all .18s ease;
   }
   .btn:hover { border-color: var(--accent-dim); transform: translateY(-1px); }
-  .btn.primary {
-    background: var(--accent); color: var(--ink); border-color: var(--accent);
-  }
+  .btn.primary { background: var(--accent); color: var(--ink); border-color: var(--accent); }
   .btn.primary:hover { background: #c4f02a; }
-  .btn .dot {
-    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
-    flex: none;
-  }
+  .btn.primary.active { background: #c4f02a; box-shadow: 0 0 0 3px rgba(215,255,62,.2); }
+  .btn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
   .btn.primary .dot { background: var(--ink); }
 
   .field { margin-top: 16px; }
@@ -97,8 +89,7 @@
     width: 100%; padding: 10px 12px;
     background: var(--ink); color: var(--text);
     border: 1px solid var(--line); border-radius: 9px;
-    font-family: "Spline Sans Mono", monospace; font-size: 13px;
-    cursor: pointer;
+    font-family: "Spline Sans Mono", monospace; font-size: 13px; cursor: pointer;
   }
 
   .hint {
@@ -109,7 +100,6 @@
   }
   .hint b { color: var(--accent); font-weight: 600; }
 
-  /* Profile dock */
   .dock {
     position: absolute; bottom: 0; left: 0; right: 0;
     z-index: 20;
@@ -118,7 +108,7 @@
     border-top: 1px solid var(--line);
     transform: translateY(100%);
     transition: transform .35s cubic-bezier(.2,.8,.2,1);
-    max-height: 46vh;
+    max-height: 48vh;
   }
   .dock.open { transform: translateY(0); }
   .dock-head {
@@ -131,38 +121,24 @@
   }
   .dock-close {
     cursor: pointer; background: none; border: none; color: var(--muted);
-    font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px;
-    transition: color .15s;
+    font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; transition: color .15s;
   }
   .dock-close:hover { color: var(--accent); }
-  .profile-host { padding: 6px 14px 14px; }
+  .profile-host { padding: 4px 10px 12px; min-height: 200px; }
 
-  /* Stats strip */
-  .stats {
-    display: flex; gap: 0; flex-wrap: wrap;
-    padding: 0 22px 14px;
-  }
-  .stat {
-    flex: 1; min-width: 110px; padding: 4px 0;
-    border-right: 1px solid var(--line);
-  }
+  .stats { display: flex; gap: 0; flex-wrap: wrap; padding: 8px 22px 6px; }
+  .stat { flex: 1; min-width: 100px; padding: 4px 0; border-right: 1px solid var(--line); }
   .stat:last-child { border-right: none; }
   .stat .v {
-    font-family: "Spline Sans Mono", monospace;
-    font-size: 22px; font-weight: 600; color: var(--accent);
+    font-family: "Spline Sans Mono", monospace; font-size: 20px; font-weight: 600; color: var(--accent);
   }
   .stat .k {
-    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
-    color: var(--muted); margin-top: 2px;
+    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); margin-top: 2px;
   }
-
-  /* Esri widget theming */
-  .esri-elevation-profile { background: transparent !important; border: none !important; }
-  .esri-elevation-profile__container { background: transparent !important; }
 
   @media (max-width: 640px) {
     .panel { width: calc(100% - 36px); top: 64px; }
-    .dock { max-height: 52vh; }
+    .dock { max-height: 56vh; }
   }
 </style>
 </head>
@@ -172,7 +148,7 @@
 
 <div class="topbar">
   <div class="brand">
-    <span class="mark">TERRAIN<b>·</b>PROFILER</span>
+    <span class="mark">TERRAIN<b>&middot;</b>PROFILER</span>
     <span class="tag">elevation along any path</span>
   </div>
 </div>
@@ -195,21 +171,21 @@
   </div>
 
   <div class="hint">
-    Click <b>New line profile</b>, then click points on the map to trace a route. Double-click to finish. The chart shows elevation along the line.
+    Click <b>New line profile</b>, then click points on the map to trace a route. Double-click to finish &mdash; the chart draws automatically.
   </div>
 </div>
 
 <div class="dock" id="dock">
   <div class="dock-head">
     <span class="t">Elevation Profile</span>
-    <button class="dock-close" id="dockClose">×</button>
+    <button class="dock-close" id="dockClose">&times;</button>
   </div>
   <div class="stats" id="stats">
-    <div class="stat"><div class="v" id="sLen">—</div><div class="k">Distance</div></div>
-    <div class="stat"><div class="v" id="sGain">—</div><div class="k">Gain</div></div>
-    <div class="stat"><div class="v" id="sLoss">—</div><div class="k">Loss</div></div>
-    <div class="stat"><div class="v" id="sMin">—</div><div class="k">Min Elev</div></div>
-    <div class="stat"><div class="v" id="sMax">—</div><div class="k">Max Elev</div></div>
+    <div class="stat"><div class="v" id="sLen">&mdash;</div><div class="k">Distance</div></div>
+    <div class="stat"><div class="v" id="sGain">&mdash;</div><div class="k">Gain</div></div>
+    <div class="stat"><div class="v" id="sLoss">&mdash;</div><div class="k">Loss</div></div>
+    <div class="stat"><div class="v" id="sMin">&mdash;</div><div class="k">Min Elev</div></div>
+    <div class="stat"><div class="v" id="sMax">&mdash;</div><div class="k">Max Elev</div></div>
   </div>
   <div class="profile-host" id="profileHost"></div>
 </div>
@@ -219,115 +195,109 @@ require([
   "esri/Map",
   "esri/views/MapView",
   "esri/widgets/ElevationProfile",
-  "esri/widgets/Sketch/SketchViewModel",
-  "esri/layers/GraphicsLayer",
-  "esri/Graphic"
-], function (Map, MapView, ElevationProfile, SketchViewModel, GraphicsLayer, Graphic) {
+  "esri/core/reactiveUtils"
+], function (Map, MapView, ElevationProfile, reactiveUtils) {
 
-  const graphics = new GraphicsLayer();
-  const map = new Map({ basemap: "topo-vector", layers: [graphics] });
+  const map = new Map({ basemap: "topo-vector", ground: "world-elevation" });
 
   const view = new MapView({
     container: "viewDiv",
     map: map,
-    center: [-119.5383, 37.8651], // Yosemite — nice terrain
-    zoom: 11,
+    center: [-119.5383, 37.8651], // Yosemite -- strong terrain
+    zoom: 12,
     ui: { components: ["zoom", "compass"] }
   });
 
-  // Elevation profile widget — ground + drawn-line input
+  // Let the widget own drawing + sampling. We just style around it.
   const elevationProfile = new ElevationProfile({
     view: view,
     container: "profileHost",
-    profiles: [{ type: "ground", color: "#d7ff3e" }],
+    profiles: [{ type: "ground", color: "#d7ff3e", title: "Ground" }],
+    unit: "metric",
     visibleElements: {
       legend: false,
-      clearButton: false,
+      clearButton: true,
       settingsButton: false,
-      sketchButton: false,
+      sketchButton: true,
       selectButton: false,
-      uniformChartScalingToggle: true
+      uniformChartScalingToggle: false
     }
-  });
-
-  const lineSymbol = {
-    type: "simple-line",
-    color: [215, 255, 62, 0.95],
-    width: 3,
-    cap: "round",
-    join: "round"
-  };
-
-  const sketchVM = new SketchViewModel({
-    view: view,
-    layer: graphics,
-    polylineSymbol: lineSymbol,
-    updateOnGraphicClick: false
   });
 
   const dock = document.getElementById("dock");
+  const drawBtn = document.getElementById("drawBtn");
+  const vm = elevationProfile.viewModel;
 
   function setStat(id, val) { document.getElementById(id).textContent = val; }
+  function resetStats() {
+    ["sLen","sGain","sLoss","sMin","sMax"].forEach(function (id) { setStat(id, "\u2014"); });
+  }
 
-  function computeStats(geometry) {
-    // geometry is a polyline in web mercator; use ground samples from widget viewModel
-    const m = elevationProfile.viewModel.profiles.getItemAt(0);
-    if (!m || !m.samples || !m.samples.length) return;
-    const s = m.samples;
-    let gain = 0, loss = 0, min = Infinity, max = -Infinity;
-    for (let i = 0; i < s.length; i++) {
-      const e = s[i].elevation;
+  function updateStats() {
+    const ground = vm.profiles.find(function (p) { return p.type === "ground"; });
+    if (!ground || !ground.samples || !ground.samples.length) { resetStats(); return; }
+    const s = ground.samples;
+    let gain = 0, loss = 0, min = Infinity, max = -Infinity, prev = null;
+    for (const samp of s) {
+      const e = samp.elevation;
       if (e == null) continue;
       if (e < min) min = e;
       if (e > max) max = e;
-      if (i > 0 && s[i-1].elevation != null) {
-        const d = e - s[i-1].elevation;
-        if (d > 0) gain += d; else loss -= d;
-      }
+      if (prev != null) { const d = e - prev; if (d > 0) gain += d; else loss -= d; }
+      prev = e;
     }
-    const distM = s[s.length - 1].distance;
+    const distM = s[s.length - 1].distance || 0;
     setStat("sLen", (distM / 1000).toFixed(2) + " km");
     setStat("sGain", Math.round(gain) + " m");
     setStat("sLoss", Math.round(loss) + " m");
-    setStat("sMin", Math.round(min) + " m");
-    setStat("sMax", Math.round(max) + " m");
+    setStat("sMin", isFinite(min) ? Math.round(min) + " m" : "\u2014");
+    setStat("sMax", isFinite(max) ? Math.round(max) + " m" : "\u2014");
   }
 
-  function startDraw() {
-    graphics.removeAll();
-    sketchVM.create("polyline");
-    dock.classList.add("open");
-  }
+  // Recompute whenever the ground profile samples change.
+  reactiveUtils.watch(
+    function () {
+      const g = vm.profiles.find(function (p) { return p.type === "ground"; });
+      return g ? g.samples : null;
+    },
+    function () { updateStats(); }
+  );
 
-  sketchVM.on("create", function (evt) {
-    if (evt.state === "complete") {
-      const g = evt.graphic;
-      // feed the drawn line into the widget as the active input
-      elevationProfile.input = new Graphic({ geometry: g.geometry });
-      // stats recompute once samples are ready
-      const handle = elevationProfile.viewModel.watch("state", function (st) {
-        if (st === "created" || st === "interaction") {
-          computeStats(g.geometry);
-          handle.remove();
-        }
-      });
-      // fallback recompute
-      setTimeout(function () { computeStats(g.geometry); }, 1500);
+  // Reflect widget progress in the dock + button.
+  reactiveUtils.watch(
+    function () { return vm.state; },
+    function (state) {
+      if (state === "creating" || state === "created" || state === "interaction") {
+        dock.classList.add("open");
+      }
+      if (state === "created" || state === "interaction") {
+        drawBtn.classList.remove("active");
+      }
+      if (state === "empty") {
+        resetStats();
+        drawBtn.classList.remove("active");
+      }
     }
+  );
+
+  // Custom button triggers the widget's own create flow.
+  drawBtn.addEventListener("click", function () {
+    dock.classList.add("open");
+    drawBtn.classList.add("active");
+    if (typeof vm.start === "function") { vm.start(); }   // begins interactive line drawing
   });
 
-  // UI wiring
-  document.getElementById("drawBtn").addEventListener("click", startDraw);
   document.getElementById("clearBtn").addEventListener("click", function () {
-    sketchVM.cancel();
-    graphics.removeAll();
-    elevationProfile.input = null;
+    if (typeof vm.clear === "function") { vm.clear(); }
     dock.classList.remove("open");
-    ["sLen","sGain","sLoss","sMin","sMax"].forEach(id => setStat(id, "—"));
+    drawBtn.classList.remove("active");
+    resetStats();
   });
+
   document.getElementById("dockClose").addEventListener("click", function () {
     dock.classList.remove("open");
   });
+
   document.getElementById("basemapSel").addEventListener("change", function (e) {
     map.basemap = e.target.value;
   });
