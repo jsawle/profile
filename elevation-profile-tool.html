@@ -137,7 +137,10 @@
     font-size: 20px; line-height: 1; padding: 4px 8px; border-radius: 6px; transition: color .15s;
   }
   .dock-close:hover { color: var(--accent); }
-  .profile-host { padding: 4px 10px 12px; min-height: 200px; }
+  .profile-host { padding: 4px 10px 12px; height: 230px; }
+  /* Make the widget's internal chart fill the host so the canvas has real height */
+  .profile-host .esri-elevation-profile,
+  .profile-host .esri-elevation-profile__container { height: 100% !important; background: transparent !important; }
 
   .stats { display: flex; gap: 0; flex-wrap: wrap; padding: 8px 22px 6px; }
   .stat { flex: 1; min-width: 100px; padding: 4px 0; border-right: 1px solid var(--line); }
@@ -263,11 +266,19 @@ require([
     ["sLen","sGain","sLoss","sMin","sMax"].forEach(function (id) { setStat(id, "\u2014"); });
   }
 
+  // Only compute once the profile has fully generated (progress === 1).
+  // Use the widget's own statistics object for distance/min/max — authoritative
+  // and complete — and derive gain/loss from the finished sample array.
   function updateStats() {
     const ground = vm.profiles.find(function (p) { return p.type === "ground"; });
     if (!ground || !ground.samples || !ground.samples.length) { resetStats(); return; }
+
+    const stats = ground.statistics;          // {maxDistance, minElevation, maxElevation, ...}
     const s = ground.samples;
-    let gain = 0, loss = 0, min = Infinity, max = -Infinity, prev = null;
+
+    // Cumulative gain / loss across the finished samples.
+    let gain = 0, loss = 0, prev = null;
+    let min = Infinity, max = -Infinity;
     for (const samp of s) {
       const e = samp.elevation;
       if (e == null) continue;
@@ -276,34 +287,52 @@ require([
       if (prev != null) { const d = e - prev; if (d > 0) gain += d; else loss -= d; }
       prev = e;
     }
-    const distM = s[s.length - 1].distance || 0;
-    setStat("sLen", (distM / 1000).toFixed(2) + " km");
+
+    // Distance: prefer statistics.maxDistance (metres); fall back to last sample.
+    let distM = 0;
+    if (stats && stats.maxDistance != null) { distM = stats.maxDistance; }
+    else if (s[s.length - 1].distance != null) { distM = s[s.length - 1].distance; }
+
+    // Min/max: prefer statistics; fall back to scanned values.
+    const minE = (stats && stats.minElevation != null) ? stats.minElevation : min;
+    const maxE = (stats && stats.maxElevation != null) ? stats.maxElevation : max;
+
+    const distKm = distM / 1000;
+    setStat("sLen", distKm < 1 ? Math.round(distM) + " m" : distKm.toFixed(2) + " km");
     setStat("sGain", Math.round(gain) + " m");
     setStat("sLoss", Math.round(loss) + " m");
-    setStat("sMin", isFinite(min) ? Math.round(min) + " m" : "\u2014");
-    setStat("sMax", isFinite(max) ? Math.round(max) + " m" : "\u2014");
+    setStat("sMin", isFinite(minE) ? Math.round(minE) + " m" : "\u2014");
+    setStat("sMax", isFinite(maxE) ? Math.round(maxE) + " m" : "\u2014");
   }
 
   // Watchers are re-bound whenever the widget is rebuilt for a new view.
-  let sampleHandle = null, stateHandle = null;
+  let progHandle = null, stateHandle = null;
   function bindWatchers() {
-    if (sampleHandle) { sampleHandle.remove(); }
+    if (progHandle) { progHandle.remove(); }
     if (stateHandle) { stateHandle.remove(); }
-    sampleHandle = reactiveUtils.watch(
-      function () {
-        const g = vm.profiles.find(function (p) { return p.type === "ground"; });
-        return g ? g.samples : null;
-      },
-      function () { updateStats(); }
+
+    // progress goes 0 -> 1 as the widget samples the ground. Only read stats
+    // once it reaches 1, otherwise distance/min/max are half-computed.
+    progHandle = reactiveUtils.watch(
+      function () { return vm.progress; },
+      function (p) { if (p >= 1) { updateStats(); } }
     );
+
+    // Correct viewModel states: disabled | ready | creating | created | selecting | selected
     stateHandle = reactiveUtils.watch(
       function () { return vm.state; },
       function (state) {
-        if (state === "creating" || state === "created" || state === "interaction") {
+        if (state === "creating" || state === "created" || state === "selected") {
           dock.classList.add("open");
         }
-        if (state === "created" || state === "interaction") { drawBtn.classList.remove("active"); }
-        if (state === "empty") { resetStats(); drawBtn.classList.remove("active"); }
+        if (state === "created" || state === "selected") {
+          drawBtn.classList.remove("active");
+          // statistics may settle a beat after state flips; recompute shortly after.
+          setTimeout(updateStats, 400);
+        }
+        if (state === "ready") {
+          drawBtn.classList.remove("active");
+        }
       }
     );
   }
