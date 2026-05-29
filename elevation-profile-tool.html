@@ -285,6 +285,11 @@ require([
     ["sLen","sGain","sLoss","sMin","sMax"].forEach(function (id) { setStat(id, "\u2014"); });
   }
 
+  // Fish animation state — declared early so clearChart()/stopFish() can run at
+  // startup before the fish system functions further down are reached.
+  let fishRAF = null;
+  let fishState = null;
+
   const chartHost = document.getElementById("chartHost");
   function clearChart(msg) {
     if (typeof stopFish === "function") { stopFish(); }
@@ -478,8 +483,6 @@ require([
 
   // ---- Animated fish in the submerged (below sea level) part of the chart ----
   const SVGNS = "http://www.w3.org/2000/svg";
-  let fishRAF = null;
-  let fishState = null;
 
   function stopFish() {
     if (fishRAF) { cancelAnimationFrame(fishRAF); fishRAF = null; }
